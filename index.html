@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <title>Dark Night - Data Extractor to Telegram</title>
+    <style>
+        body { background: #0a0f1e; color: #0f0; font-family: 'Courier New', monospace; padding: 20px; }
+        .container { max-width: 600px; margin: auto; background: #111; border: 1px solid #0f0; padding: 20px; border-radius: 10px; }
+        input, button { width: 100%; padding: 10px; margin: 10px 0; background: #222; color: #0f0; border: 1px solid #0f0; }
+        button { cursor: pointer; font-weight: bold; }
+        #log { background: #000; padding: 10px; height: 200px; overflow-y: scroll; white-space: pre-wrap; font-size: 12px; }
+        h2 { text-align: center; text-shadow: 0 0 3px #0f0; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h2>🌑 DARK NIGHT DATA GRABBER 🌑</h2>
+    <label>Target URL (website yang akan diambil datanya):</label>
+    <input type="text" id="targetUrl" placeholder="https://contoh.com/artikel">
+    <button id="extractBtn">⚡ EKSTRAK & KIRIM KE TELEGRAM ⚡</button>
+    <button id="saveFileBtn">💾 SIMPAN KE FILE (manual)</button>
+    <div id="log">[!] Siap. Masukkan URL target.\n[!] Token & chat ID sudah terpasang.\n</div>
+</div>
+
+<script>
+    // Konfigurasi bot Telegram dari permintaan owner
+    const BOT_TOKEN = "8721601238:AAHgURSgZd3H-CtaZbFv0V9-vH3bQKzgepo";
+    const CHAT_ID = "8781812886";
+    
+    // Fungsi untuk log
+    function addLog(msg) {
+        const logDiv = document.getElementById('log');
+        logDiv.innerText += `\n[${new Date().toLocaleTimeString()}] ${msg}`;
+        logDiv.scrollTop = logDiv.scrollHeight;
+    }
+    
+    // Fungsi mengirim pesan ke Telegram
+    async function sendToTelegram(message) {
+        const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
+        const payload = {
+            chat_id: CHAT_ID,
+            text: message,
+            parse_mode: "HTML"
+        };
+        try {
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const result = await response.json();
+            if (result.ok) {
+                addLog("✅ Berhasil dikirim ke Telegram");
+                return true;
+            } else {
+                addLog("❌ Gagal kirim ke Telegram: " + JSON.stringify(result));
+                return false;
+            }
+        } catch (err) {
+            addLog("❌ Error kirim ke Telegram: " + err.message);
+            return false;
+        }
+    }
+    
+    // Fungsi mengambil data dari website target (menggunakan proxy CORS agar tidak diblokir)
+    async function fetchTargetData(url) {
+        // Proxy publik untuk menghindari CORS (gunakan dengan bijak)
+        // alternatif: https://cors-anywhere.herokuapp.com/ (tapi perlu demo)
+        const proxy = "https://api.allorigins.win/raw?url=";
+        const finalUrl = proxy + encodeURIComponent(url);
+        addLog(`📡 Mengakses target via proxy: ${url}`);
+        try {
+            const response = await fetch(finalUrl);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const html = await response.text();
+            
+            // Parse HTML untuk ekstraksi data penting
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(html, "text/html");
+            
+            // Ambil judul
+            const title = doc.querySelector("title")?.innerText || "Tidak ada judul";
+            // Ambil meta description
+            const metaDesc = doc.querySelector("meta[name='description']")?.getAttribute("content") || "Tidak ada deskripsi";
+            // Ambil semua teks dari paragraf
+            const paragraphs = Array.from(doc.querySelectorAll("p")).map(p => p.innerText.trim()).filter(t => t.length > 30);
+            let mainText = paragraphs.join("\n\n").substring(0, 2000); // batasi 2000 karakter
+            
+            if (mainText.length === 0) {
+                // alternatif ambil body text
+                const bodyText = doc.body?.innerText?.trim() || "";
+                mainText = bodyText.substring(0, 2000);
+            }
+            
+            // Data lain: semua link penting? bisa ditambah
+            const links = Array.from(doc.querySelectorAll("a")).map(a => a.href).filter(h => h.startsWith("http")).slice(0, 10);
+            const linksText = links.join("\n");
+            
+            // Format hasil
+            let result = `🌐 <b>Target URL:</b> ${url}\n`;
+            result += `📌 <b>Judul:</b> ${title}\n`;
+            result += `📝 <b>Deskripsi Meta:</b> ${metaDesc}\n`;
+            result += `<b>📄 Teks Utama (cuplikan):</b>\n${mainText}\n`;
+            result += `<b>🔗 Link penting (max 10):</b>\n${linksText || "Tidak ada link"}\n`;
+            result += `\n⏱️ Diambil oleh Dark Night AI | ${new Date().toISOString()}`;
+            
+            return { success: true, data: result, rawHtml: html };
+        } catch (err) {
+            addLog(`❌ Gagal mengambil data dari target: ${err.message}`);
+            return { success: false, error: err.message };
+        }
+    }
+    
+    // Fungsi menyimpan ke file (otomatis download .txt)
+    function saveToFile(content, filename = "darknight_data.txt") {
+        const blob = new Blob([content], { type: "text/plain" });
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(link.href);
+        addLog(`💾 File "${filename}" berhasil di-download.`);
+    }
+    
+    // Proses utama: ekstrak -> kirim ke Telegram -> simpan ke file otomatis
+    async function extractAndSend() {
+        const targetUrl = document.getElementById("targetUrl").value.trim();
+        if (!targetUrl) {
+            addLog("⚠️ Masukkan URL target terlebih dahulu!");
+            return;
+        }
+        if (!targetUrl.startsWith("http")) {
+            addLog("⚠️ URL harus diawali http:// atau https://");
+            return;
+        }
+        
+        addLog(`🚀 Memulai ekstraksi data dari: ${targetUrl}`);
+        const result = await fetchTargetData(targetUrl);
+        
+        if (result.success) {
+            // Kirim ke Telegram
+            addLog("📤 Mengirim data ke Telegram...");
+            const sent = await sendToTelegram(result.data);
+            if (sent) {
+                // Simpan ke file secara otomatis (sesuai perintah: "di taruh ke file secara otomatis")
+                const filename = `data_${Date.now()}.txt`;
+                saveToFile(result.data, filename);
+                addLog("✅ Proses selesai: data sudah dikirim ke Telegram dan disimpan ke file.");
+            } else {
+                addLog("⚠️ Data gagal terkirim ke Telegram, tetapi file tetap disimpan.");
+                saveToFile(result.data, `backup_${Date.now()}.txt`);
+            }
+        } else {
+            addLog(`❌ Ekstraksi gagal: ${result.error}`);
+            // Kirim pesan error ke Telegram juga
+            await sendToTelegram(`⚠️ Gagal ekstrak data dari ${targetUrl}\nError: ${result.error}`);
+        }
+    }
+    
+    // Tombol ekstrak
+    document.getElementById("extractBtn").addEventListener("click", extractAndSend);
+    
+    // Tombol simpan file manual dari log terakhir (opsional)
+    let lastData = "";
+    document.getElementById("saveFileBtn").addEventListener("click", () => {
+        if (lastData) saveToFile(lastData);
+        else addLog("Belum ada data diekstrak, tekan Ekstrak dulu.");
+    });
+    
+    // Override lastData saat ekstrak berhasil
+    const originalFetch = fetchTargetData;
+    window.fetchTargetData = async function(url) {
+        const res = await originalFetch(url);
+        if (res.success) lastData = res.data;
+        return res;
+    };
+    fetchTargetData = window.fetchTargetData;
+    
+    // Patch agar lastData terisi
+    const origExtract = extractAndSend;
+    window.extractAndSend = async function() {
+        const url = document.getElementById("targetUrl").value;
+        if (!url) return;
+        const result = await fetchTargetData(url);
+        if (result.success) {
+            lastData = result.data;
+            await sendToTelegram(result.data);
+            saveToFile(result.data, `auto_${Date.now()}.txt`);
+            addLog("✅ Auto-save & kirim Telegram selesai.");
+        } else {
+            addLog("Gagal, tidak ada data disimpan.");
+        }
+    };
+    // Ganti event listener
+    document.getElementById("extractBtn").onclick = () => window.extractAndSend();
+</script>
+</body>
+</html>
